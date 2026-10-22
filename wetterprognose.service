@@ -1,0 +1,14 @@
+[Unit]
+Description=Wetterprognose – Sonnenstunden-Vorhersage mit Tagesmail
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/WebProjects/Wetterprognose
+ExecStart=/usr/bin/python3 /root/WebProjects/Wetterprognose/app.py --host 0.0.0.0 --port 8080
+# Optionaler Passwortschutz für das Webfrontend (Benutzername beliebig):
+# Environment=WP_PASSWORD=meinpasswort
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

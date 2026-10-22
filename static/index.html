@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sonnenprognose</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="sun-dot"></span>Sonnenprognose</div>
+  <nav>
+    <button class="tab active" data-view="forecast">Prognose</button>
+    <button class="tab" data-view="archive">Archiv</button>
+    <button class="tab" data-view="settings">Einstellungen</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ===================== PROGNOSE ===================== -->
+  <section id="view-forecast" class="view">
+    <div class="row-between">
+      <div>
+        <div class="muted" id="fc-place">–</div>
+        <h1 id="fc-date">–</h1>
+      </div>
+      <div class="seg" id="day-switch">
+        <button data-day="today">Heute</button>
+        <button data-day="tomorrow" class="active">Morgen</button>
+        <button data-day="plus2">Übermorgen</button>
+      </div>
+    </div>
+
+    <div id="fc-empty" class="card notice" hidden>
+      Noch kein Standort festgelegt. <a href="#" data-goto="settings">Jetzt in den Einstellungen festlegen →</a>
+    </div>
+    <div id="fc-error" class="card notice error" hidden></div>
+    <div id="fc-loading" class="muted" hidden>Lade Prognose aus allen Quellen …</div>
+
+    <div id="fc-content" hidden>
+      <div class="grid-hero">
+        <div class="card hero">
+          <div class="label">Erwartete Sonnenstunden</div>
+          <div class="big"><span id="fc-total">–</span><small>h</small></div>
+          <div class="meter"><div id="fc-meter"></div></div>
+          <div class="muted" id="fc-possible">–</div>
+          <div class="muted small corr-note" id="fc-corr" hidden></div>
+        </div>
+        <div class="card facts">
+          <div><span class="label">Sonnenaufgang</span><b id="fc-sunrise">–</b></div>
+          <div><span class="label">Sonnenuntergang</span><b id="fc-sunset">–</b></div>
+          <div><span class="label">Über deinem Horizont</span><b id="fc-visible">–</b></div>
+          <div><span class="label">Max. Sonnenhöhe</span><b id="fc-elev">–</b></div>
+          <div><span class="label">Zuverlässigkeit</span><b id="fc-conf">–</b></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Wann scheint die Sonne?</h2>
+        <div id="fc-windows" class="windows"></div>
+        <div class="chart-wrap"><svg id="fc-chart" role="img" aria-label="Sonnenminuten je Stunde"></svg></div>
+        <div class="legend">
+          <span><i class="sw sun"></i>erwartete Sonnenminuten</span>
+          <span><i class="sw possible"></i>astronomisch möglich (dein Horizont)</span>
+          <span><i class="sw prob"></i>Sonnenwahrscheinlichkeit</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Quellen im Vergleich</h2>
+        <div class="table-wrap"><table id="fc-sources" class="tbl"></table></div>
+        <p class="muted small" id="fc-generated"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== ARCHIV ===================== -->
+  <section id="view-archive" class="view" hidden>
+    <div class="row-between">
+      <div>
+        <div class="muted">Archiv</div>
+        <h1 id="ar-title">–</h1>
+      </div>
+      <div class="seg" id="ar-mode">
+        <button data-mode="year">Jahr</button>
+        <button data-mode="month" class="active">Monat</button>
+        <button data-mode="week">Woche</button>
+        <button data-mode="day">Tag</button>
+      </div>
+    </div>
+
+    <div class="card filter-bar">
+      <button class="btn ghost icon" id="ar-prev" type="button" aria-label="Zurück">‹</button>
+      <select id="ar-year" aria-label="Jahr"></select>
+      <select id="ar-month" aria-label="Monat"></select>
+      <select id="ar-week" aria-label="Kalenderwoche"></select>
+      <input id="ar-day" type="date" aria-label="Tag">
+      <button class="btn ghost icon" id="ar-next" type="button" aria-label="Weiter">›</button>
+      <button class="btn ghost" id="ar-now" type="button">Aktuell</button>
+    </div>
+
+    <div id="ar-error" class="card notice error" hidden></div>
+    <div id="ar-empty" class="card notice" hidden>Für diesen Zeitraum sind keine Daten archiviert.
+      Vergangene Zeiträume kannst du unten unter „Daten nachladen“ ergänzen.</div>
+
+    <div id="ar-content" hidden>
+      <div class="kpis">
+        <div class="card kpi"><span class="label">Prognose</span><b id="ar-k-fc">–</b><small id="ar-k-fc-sub"></small></div>
+        <div class="card kpi"><span class="label">Gemessen</span><b id="ar-k-act">–</b><small id="ar-k-act-sub"></small></div>
+        <div class="card kpi"><span class="label" id="ar-k-avg-label">Ø pro Tag</span><b id="ar-k-avg">–</b><small id="ar-k-avg-sub"></small></div>
+        <div class="card kpi"><span class="label">Prognosefehler</span><b id="ar-k-err">–</b><small id="ar-k-err-sub"></small></div>
+      </div>
+
+      <div class="card">
+        <h2 id="ar-chart-title">Verlauf</h2>
+        <div class="chart-wrap"><svg id="ar-chart" role="img" aria-label="Sonnenstunden im Zeitraum"></svg></div>
+        <div class="legend">
+          <span><i class="sw sun"></i>Prognose</span>
+          <span><i class="sw measured"></i>Gemessen</span>
+          <span><i class="sw possible"></i>astronomisch möglich</span>
+          <span id="ar-drill-hint" class="muted">Balken anklicken für Details</span>
+        </div>
+      </div>
+
+      <div class="card" id="ar-day-info" hidden></div>
+
+      <div class="card" id="ar-table-card">
+        <div class="table-wrap"><table class="tbl" id="ar-table"></table></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Lernende Korrektur</h2>
+      <p class="muted small">Je Kalendermonat: gemessene ÷ unkorrigiert prognostizierte Sonnenstunden, Nachbarmonate halb
+        gewichtet, bei wenigen Daten Richtung 1 gezogen. Die Güte ist per Kreuzvalidierung ermittelt – jeder Tag wird mit
+        einem Faktor bewertet, in den er selbst nicht eingeflossen ist.</p>
+      <div id="corr-summary" class="meta-grid"></div>
+      <div class="table-wrap"><table class="tbl" id="corr-table"></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Datenbestand &amp; Komprimierung</h2>
+      <div id="ar-meta" class="meta-grid"></div>
+      <p class="muted small">Jeden Tag zur Sendezeit wird die Prognose für morgen gespeichert, gemessene Werte der
+        nächsten DWD-Station werden nachgetragen. Ist ein Monat abgeschlossen, werden seine Stundendetails komprimiert;
+        Tagessummen bleiben direkt abrufbar.</p>
+      <h2 style="margin-top:1.2rem">Daten nachladen</h2>
+      <p class="muted small">Für vergangene Tage wird die Prognose aus dem Modellarchiv (Open-Meteo, ab 2022)
+        rekonstruiert und mit den DWD-Messwerten ergänzt. Bereits gespeicherte Tagesprognosen werden nicht überschrieben.</p>
+      <div class="btn-row">
+        <label class="inline">von <input id="ar-bf-from" type="date"></label>
+        <label class="inline">bis <input id="ar-bf-to" type="date"></label>
+        <button id="ar-bf-start" class="btn ghost" type="button">Nachladen</button>
+        <span class="muted small" id="ar-bf-status"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== EINSTELLUNGEN ===================== -->
+  <section id="view-settings" class="view" hidden>
+    <h1>Einstellungen</h1>
+
+    <div class="card">
+      <h2>Standort</h2>
+      <p class="muted">Suche einen Ort, klicke auf die Karte oder ziehe die Markierung exakt auf deinen Platz (Balkon, Garten, Dach …).</p>
+      <div class="search">
+        <input id="loc-search" type="search" placeholder="Ort oder Adresse suchen …" autocomplete="off">
+        <button id="loc-gps" class="btn ghost" type="button" title="Aktuellen Standort verwenden">📍 Mein Standort</button>
+        <ul id="loc-results" class="results" hidden></ul>
+      </div>
+      <div id="map"></div>
+      <div class="form-grid">
+        <label>Name<input id="loc-name" type="text" placeholder="z. B. Zuhause"></label>
+        <label>Breitengrad<input id="loc-lat" type="number" step="0.00001"></label>
+        <label>Längengrad<input id="loc-lon" type="number" step="0.00001"></label>
+        <label>Höhe (m)<input id="loc-elev" type="number" step="1"></label>
+        <label>Zeitzone<input id="loc-tz" type="text"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Horizont &amp; Hindernisse</h2>
+      <p class="muted">Höhe des Horizonts in Grad je Himmelsrichtung – Berge, Gebäude oder Bäume, die die Sonne verdecken.
+        Lade zuerst das Gelände und erhöhe dann einzelne Richtungen für nahe Hindernisse.</p>
+      <div class="horizon">
+        <svg id="hz-plot" viewBox="-110 -110 220 220" aria-label="Horizontprofil"></svg>
+        <div>
+          <div id="hz-fields" class="hz-fields"></div>
+          <div class="btn-row">
+            <button id="hz-terrain" class="btn ghost" type="button">⛰ Geländehorizont laden</button>
+            <button id="hz-reset" class="btn ghost" type="button">Auf 0° zurücksetzen</button>
+          </div>
+          <p class="muted small" id="hz-msg"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Berechnung &amp; Quellen</h2>
+      <div class="form-grid">
+        <label>Stunde gilt als „sonnig“ ab (Minuten)
+          <input id="calc-threshold" type="number" min="1" max="60"></label>
+        <label>Kontakt für MET Norway (E-Mail, empfohlen)
+          <input id="calc-metcontact" type="text" placeholder="du@example.com"></label>
+        <label class="check"><input id="calc-correction" type="checkbox"> Lernende Monatskorrektur aus dem Archiv</label>
+      </div>
+      <div class="table-wrap"><table class="tbl" id="src-table"></table></div>
+      <p class="muted small">Gewicht 0 = Quelle ignorieren. MOSMIX wird automatisch geringer gewichtet, je weiter die nächste DWD-Station entfernt ist (0 ab 40 km).</p>
+    </div>
+
+    <div class="card">
+      <h2>Tägliche E-Mail</h2>
+      <div class="btn-row">
+        <button id="mail-preset-gmail" class="btn ghost" type="button">Gmail / Googlemail einrichten</button>
+      </div>
+      <p class="muted small" id="mail-hint" hidden>
+        Gmail: Benutzername = deine vollständige Gmail-Adresse. Als Passwort ein <b>App-Passwort</b> verwenden
+        (Google-Konto → Sicherheit → 2-Faktor-Authentifizierung → App-Passwörter), nicht das normale Kontopasswort.
+      </p>
+      <div class="form-grid">
+        <label class="check"><input id="mail-enabled" type="checkbox"> Tägliche Mail aktivieren</label>
+        <label>Empfänger (mehrere mit Komma)<input id="mail-recipients" type="text"></label>
+        <label>Sendezeit<input id="mail-time" type="time"></label>
+        <label>Prognose für
+          <select id="mail-target"><option value="tomorrow">morgen</option><option value="today">heute</option></select></label>
+        <label>SMTP-Server<input id="mail-host" type="text" placeholder="smtp.gmail.com"></label>
+        <label>Port<input id="mail-port" type="number"></label>
+        <label>Verschlüsselung
+          <select id="mail-security"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">keine</option></select></label>
+        <label>Benutzername<input id="mail-user" type="text" autocomplete="off"></label>
+        <label>Passwort<input id="mail-pass" type="password" autocomplete="new-password"></label>
+        <label>Absendername (optional)<input id="mail-sender" type="text" placeholder="z. B. Sonnenprognose"></label>
+      </div>
+      <div class="btn-row">
+        <button id="mail-test" class="btn ghost" type="button">✉ Testmail jetzt senden</button>
+        <span class="muted small" id="mail-status"></span>
+      </div>
+    </div>
+
+    <div class="save-bar">
+      <span id="save-msg" class="muted"></span>
+      <button id="save" class="btn primary" type="button">Einstellungen speichern</button>
+    </div>
+  </section>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/archive.js"></script>
+</body>
+</html>
