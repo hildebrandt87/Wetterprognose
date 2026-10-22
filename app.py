@@ -24,6 +24,7 @@ import archive
 import correction
 import forecast
 import mailer
+import pv
 import sources
 import storage
 
@@ -182,7 +183,12 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         try:
             if url.path == "/api/settings":
-                return self._json(storage.public_settings(storage.save_settings(self._body())))
+                before = storage.load_settings()
+                saved = storage.save_settings(self._body())
+                if saved["location"].get("lat") is not None and (
+                        pv.config_key(saved) != pv.config_key(before) or saved["pv"]["enabled"] != before["pv"]["enabled"]):
+                    archive.start_recalc_pv(saved)
+                return self._json(storage.public_settings(saved))
             if url.path == "/api/mail/test":
                 result = send_daily_mail(storage.load_settings())
                 return self._json({"ok": True, "total_hours": result["total_hours"], "date": result["date"]})

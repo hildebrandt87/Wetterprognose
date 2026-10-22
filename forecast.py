@@ -51,6 +51,8 @@ def compute(settings, day_spec="tomorrow"):
     try:
         rad = pv.radiation(settings, day)
         result["radiation"] = {k: rad[k] for k in ("ghi_raw", "ghi", "correction")}
+        result["radiation"]["hourly_raw"] = {k[11:13]: [round(v["ghi"]), round(v["dhi"]), round(v["temp"], 1)]
+                                             for k, v in rad["irr_raw"].items()}
         result["pv"] = pv.compute(settings, day, rad)
     except Exception as e:  # noqa: BLE001
         result["radiation"] = None

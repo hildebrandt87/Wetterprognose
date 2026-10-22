@@ -139,13 +139,26 @@
 
       <div class="card">
         <h2 id="ar-chart-title">Verlauf</h2>
-        <div class="chart-wrap"><svg id="ar-chart" role="img" aria-label="Sonnenstunden im Zeitraum"></svg></div>
+        <div class="chart-wrap"><svg id="ar-chart" class="bars" role="img" aria-label="Sonnenstunden im Zeitraum"></svg></div>
         <div class="legend">
           <span><i class="sw sun"></i>Prognose</span>
           <span><i class="sw measured"></i>Gemessen</span>
           <span><i class="sw possible"></i>astronomisch möglich</span>
           <span id="ar-drill-hint" class="muted">Balken anklicken für Details</span>
         </div>
+      </div>
+
+      <div class="card" id="ar-pv-card" hidden>
+        <h2 id="ar-pv-title">Solarertrag</h2>
+        <div class="meta-grid" id="ar-pv-kpis"></div>
+        <div class="chart-wrap"><svg id="ar-pv-chart" class="bars" role="img" aria-label="Solarertrag im Zeitraum"></svg></div>
+        <div class="legend">
+          <span><i class="sw pv"></i>Prognose</span>
+          <span><i class="sw measured"></i>aus gemessener Strahlung berechnet</span>
+        </div>
+        <p class="muted small" id="ar-pv-note">„Aus Messung“ ist kein Zählerwert: Es ist der Ertrag deiner Anlage (aktuelle
+          Einstellungen), berechnet aus der an der DWD-Station gemessenen Globalstrahlung. Ändern sich die Anlagendaten,
+          wird die gesamte Historie automatisch neu berechnet.</p>
       </div>
 
       <div class="card" id="ar-day-info" hidden></div>

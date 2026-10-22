@@ -170,6 +170,25 @@ function renderArchive(data) {
     key: r.key, label: r.label, fc: r.forecast_h, act: r.actual_h, possible: r.possible_h,
   })), (key) => drill(data.drill, key), "h");
   renderTable(data);
+  renderPvArchive(data.rows.map((r) => ({ key: r.key, label: r.label, fc: r.pv_kwh, act: r.pv_actual_kwh })),
+    s, (key) => drill(data.drill, key), ar.mode === "year" ? "je Monat" : "je Tag");
+}
+
+function renderPvArchive(items, s, onClick, per) {
+  const has = items.some((i) => i.fc != null || i.act != null);
+  $("#ar-pv-card").hidden = !has;
+  if (!has) return;
+  const kwh = (v) => (v == null ? "–" : `${v.toLocaleString("de-DE", { maximumFractionDigits: 1 })} kWh`);
+  const pairs = items.filter((i) => i.fc != null && i.act != null);
+  const mae = pairs.length ? pairs.reduce((a, i) => a + Math.abs(i.fc - i.act), 0) / pairs.length : null;
+  const best = items.filter((i) => i.act != null).sort((a, b) => b.act - a.act)[0];
+  $("#ar-pv-title").textContent = `Solarertrag ${per}`;
+  $("#ar-pv-kpis").innerHTML = `
+    <div><span class="label">Prognose</span><b>${kwh(s.pv_kwh)}</b></div>
+    <div><span class="label">Aus Messung</span><b>${kwh(s.pv_actual_kwh)}</b></div>
+    <div><span class="label">Ø Abweichung ${per}</span><b>${kwh(mae)}</b></div>
+    <div><span class="label">Bester Wert</span><b>${best ? `${kwh(best.act)} (${esc(best.label)})` : "–"}</b></div>`;
+  renderBars(items, onClick, "kWh", { svg: "#ar-pv-chart", fcClass: "bar-pv", actLabel: "aus Messung" });
 }
 
 function drill(target, key) {
@@ -180,10 +199,11 @@ function drill(target, key) {
 
 function renderTable(data) {
   const isYear = ar.mode === "year";
-  const hasPv = data.rows.some((r) => r.pv_kwh != null);
-  const pvCell = (v) => (hasPv ? `<td class="num">${v == null ? "–" : `${fmt1(v)} kWh`}</td>` : "");
+  const hasPv = data.rows.some((r) => r.pv_kwh != null || r.pv_actual_kwh != null);
+  const pvCell = (v, a) => (hasPv ? `<td class="num">${v == null ? "–" : `${fmt1(v)} kWh`}</td>`
+    + `<td class="num">${a == null ? "–" : `${fmt1(a)} kWh`}</td>` : "");
   const head = `<tr><th>${isYear ? "Monat" : "Tag"}</th><th class="num">Prognose</th><th class="num">Gemessen</th>
-    <th class="num">Abweichung</th><th class="num">möglich</th>${hasPv ? '<th class="num">Solar (Prognose)</th>' : ""}
+    <th class="num">Abweichung</th><th class="num">möglich</th>${hasPv ? '<th class="num">Solar Prognose</th><th class="num">Solar aus Messung</th>' : ""}
     <th>${isYear ? "Tage" : "Art"}</th></tr>`;
   const rows = data.rows.filter((r) => !isYear || r.days).map((r) => {
     const diff = r.forecast_h != null && r.actual_h != null ? r.forecast_h - r.actual_h : null;
@@ -194,11 +214,11 @@ function renderTable(data) {
       : `<span class="tag">${{ vortag: "Vortag", gleicher_tag: "selber Tag", rekonstruiert: "rekonstruiert" }[r.kind] || "nur Messung"}</span>`;
     const label = isYear ? MONTH_NAMES[Number(r.key.slice(5)) - 1] : r.label;
     return `<tr class="clickable" data-key="${r.key}"><td>${label}</td><td class="num">${fmtH(r.forecast_h)}</td>
-      <td class="num">${fmtH(r.actual_h)}</td><td class="num">${diffCell}</td><td class="num">${fmtH(r.possible_h)}</td>${pvCell(r.pv_kwh)}<td>${last}</td></tr>`;
+      <td class="num">${fmtH(r.actual_h)}</td><td class="num">${diffCell}</td><td class="num">${fmtH(r.possible_h)}</td>${pvCell(r.pv_kwh, r.pv_actual_kwh)}<td>${last}</td></tr>`;
   }).join("");
   const s = data.summary;
   const total = `<tr><td><b>Summe</b></td><td class="num"><b>${fmtH(s.forecast_h)}</b></td><td class="num"><b>${fmtH(s.actual_h)}</b></td>
-    <td></td><td class="num">${fmtH(s.possible_h)}</td>${pvCell(s.pv_kwh)}<td></td></tr>`;
+    <td></td><td class="num">${fmtH(s.possible_h)}</td>${pvCell(s.pv_kwh, s.pv_actual_kwh)}<td></td></tr>`;
   $("#ar-table").innerHTML = head + rows + total;
   $("#ar-table").onclick = (e) => {
     const tr = e.target.closest("tr[data-key]");
@@ -222,6 +242,14 @@ function renderDay(data) {
   $("#ar-drill-hint").hidden = true;
   $("#ar-table-card").hidden = true;
   renderBars(list, null, "min");
+  const ph = data.pv_hours;
+  if (ph) {
+    const keys = [...new Set([...Object.keys(ph.forecast), ...Object.keys(ph.measured)])].sort();
+    const pvItems = keys.map((h) => ({ key: h, label: h.slice(0, 2), fc: ph.forecast[h] ?? null, act: ph.measured[h] ?? null }));
+    renderPvArchive(pvItems, { pv_kwh: data.day.pv_kwh, pv_actual_kwh: data.day.pv_actual_kwh }, null, "je Stunde");
+  } else {
+    $("#ar-pv-card").hidden = true;
+  }
 
   const win = det.forecast?.windows || [];
   const src = det.forecast?.sources || [];
@@ -250,9 +278,10 @@ function renderDay(data) {
 }
 
 /* Gruppierte Balken: Prognose + Gemessen vor „möglich“ */
-function renderBars(items, onClick, unit) {
-  ar.lastBars = [items, onClick, unit];
-  const svg = $("#ar-chart");
+function renderBars(items, onClick, unit, opts = {}) {
+  const sel = opts.svg || "#ar-chart";
+  ar.lastBars = { ...ar.lastBars, [sel]: [items, onClick, unit, opts] };
+  const svg = $(sel);
   const W = Math.max(520, svg.clientWidth || 800), H = 260;
   const m = { l: 40, r: 10, t: 12, b: 26 };
   const cw = W - m.l - m.r, ch = H - m.t - m.b;
@@ -261,23 +290,26 @@ function renderBars(items, onClick, unit) {
 
   const max = Math.max(1, ...items.flatMap((i) => [i.fc ?? 0, i.act ?? 0, i.possible ?? 0]));
   const nice = unit === "min" ? 60 : niceMax(max);
+  const fcClass = opts.fcClass || "bar-fc";
+  const decimals = unit === "kWh" && nice <= 2 ? 2 : 1;
+  const num = (v) => v.toLocaleString("de-DE", { maximumFractionDigits: decimals });
   const y = (v) => m.t + ch - (v / nice) * ch;
   const stepW = cw / items.length, group = Math.min(stepW * 0.78, 64), bw = group / 2;
   let out = "";
   for (let i = 0; i <= 4; i++) {
     const v = (nice / 4) * i;
     out += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>`;
-    out += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${Number.isInteger(v) ? v : v.toFixed(1)}</text>`;
+    out += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${num(v)}</text>`;
   }
   const labelEvery = Math.ceil(items.length / Math.max(1, Math.floor(cw / 34)));
   items.forEach((it, i) => {
     const gx = m.l + i * stepW + (stepW - group) / 2;
     const bar = (cls, x, w, v) => (v == null ? "" : `<rect class="${cls}" x="${x}" y="${y(v)}" width="${w}" height="${Math.max(0, m.t + ch - y(v))}" rx="2"/>`);
-    const tip = `${it.label}: Prognose ${it.fc == null ? "–" : fmt1(it.fc)} · gemessen ${it.act == null ? "–" : fmt1(it.act)}` +
-      (it.possible != null ? ` · möglich ${fmt1(it.possible)}` : "") + ` ${unit}`;
+    const tip = `${it.label}: Prognose ${it.fc == null ? "–" : num(it.fc)} · ${opts.actLabel || "gemessen"} ${it.act == null ? "–" : num(it.act)}` +
+      (it.possible != null ? ` · möglich ${num(it.possible)}` : "") + ` ${unit}`;
     out += `<g data-key="${it.key}"><title>${esc(tip)}</title>`;
     out += bar("bar-possible", gx, group, it.possible);
-    out += bar("bar-fc", gx + 1, bw - 1.5, it.fc);
+    out += bar(fcClass, gx + 1, bw - 1.5, it.fc);
     out += bar("bar-act", gx + bw + 0.5, bw - 1.5, it.act);
     if (onClick) out += `<rect class="hit" x="${m.l + i * stepW}" y="${m.t}" width="${stepW}" height="${ch}"/>`;
     out += "</g>";
@@ -389,5 +421,7 @@ function initArchive() {
 let arResizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(arResizeTimer);
-  arResizeTimer = setTimeout(() => { if (ar.lastBars && !$("#view-archive").hidden) renderBars(...ar.lastBars); }, 150);
+  arResizeTimer = setTimeout(() => {
+    if (ar.lastBars && !$("#view-archive").hidden) Object.values(ar.lastBars).forEach((args) => renderBars(...args));
+  }, 150);
 });

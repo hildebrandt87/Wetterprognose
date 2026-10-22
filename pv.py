@@ -13,6 +13,8 @@ Je Stunde:
 Die Strahlung wird vorher mit der gelernten Monatskorrektur (Messung DWD vs. Modelle) skaliert.
 Zum Vergleich: Ertrag bei wolkenlosem Himmel (Haurwitz-Modell, Diffusanteil 15 %).
 """
+import hashlib
+import json
 import math
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -187,3 +189,33 @@ def compute(settings, day: date, rad):
                     "kwh": round(per_array[i], 1)} for i, a in enumerate(arrays)],
         "sources": rad["sources"],
     }
+
+
+def active_arrays(pv):
+    return [a for a in pv["arrays"] if a["count"] > 0 and a["wp"] > 0]
+
+
+def config_key(settings):
+    """Kennung aller Angaben, die den Ertrag beeinflussen – ändert sie sich, wird das Archiv neu berechnet."""
+    pv = settings["pv"]
+    relevant = {k: pv.get(k) for k in ("arrays", "losses_pct", "inverter_kw", "temp_coeff", "albedo")}
+    relevant.update(horizon=settings.get("horizon"), lat=settings["location"]["lat"], lon=settings["location"]["lon"])
+    return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def day_yield(settings, day: date, irr):
+    """Tagesertrag (kWh) und Stundenwerte aus Stundenstrahlung {Stundenschlüssel: {ghi, dhi, temp}}."""
+    pv = settings["pv"]
+    arrays = active_arrays(pv)
+    if not arrays:
+        return None, {}
+    geo = _geometry(day, settings["location"], settings.get("horizon"), arrays)
+    none = {"ghi": 0.0, "dhi": 0.0, "temp": 15.0}
+    hours, total = {}, 0.0
+    for key, g in sorted(geo.items()):
+        if g["cosz"] <= 0:
+            continue
+        kw = sum(_hour_power(g, irr.get(key, none), arrays, pv))
+        total += kw
+        hours[key[11:16]] = round(kw, 3)
+    return round(total, 2), hours

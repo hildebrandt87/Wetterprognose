@@ -47,7 +47,9 @@ def _conn():
             packed INTEGER NOT NULL DEFAULT 0,
             raw_h REAL,
             pv_kwh REAL,
-            ghi_raw REAL, ghi_actual REAL, ghi_station TEXT
+            ghi_raw REAL, ghi_actual REAL, ghi_station TEXT,
+            pv_actual_kwh REAL, pv_config TEXT,
+            rad_f INTEGER NOT NULL DEFAULT 0, rad_m INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS archive_details (date TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS archive_months (
@@ -62,7 +64,9 @@ def _conn():
         c.execute("UPDATE archive_days SET raw_h = forecast_h")
         c.commit()
     # Spätere Spalten nachrüsten (bestehende Datenbanken)
-    for col, typ in (("pv_kwh", "REAL"), ("ghi_raw", "REAL"), ("ghi_actual", "REAL"), ("ghi_station", "TEXT")):
+    for col, typ in (("pv_kwh", "REAL"), ("ghi_raw", "REAL"), ("ghi_actual", "REAL"), ("ghi_station", "TEXT"),
+                     ("pv_actual_kwh", "REAL"), ("pv_config", "TEXT"),
+                     ("rad_f", "INTEGER NOT NULL DEFAULT 0"), ("rad_m", "INTEGER NOT NULL DEFAULT 0")):
         if col not in cols and "raw_h" in cols:
             c.execute(f"ALTER TABLE archive_days ADD COLUMN {col} {typ}")
             c.commit()
@@ -116,9 +120,42 @@ def store_forecast(result, kind, overwrite=False):
             "confidence_label": result["confidence_label"],
             "correction": result.get("correction"),
         }
+        rad = result.get("radiation") or {}
+        if rad.get("hourly_raw"):
+            corr = rad.get("correction")
+            details.setdefault("rad", {}).update(f=rad["hourly_raw"], cf=corr["factor"] if corr else 1.0)
+            c.execute("UPDATE archive_days SET rad_f = 1, pv_config = NULL WHERE date = ?", (day,))
         c.execute("INSERT OR REPLACE INTO archive_details (date, data) VALUES (?, ?)",
                   (day, json.dumps(details, separators=(",", ":"))))
     return True
+
+
+def _update_details(c, iso, fn):
+    """Ändert die Details eines Tages; ein komprimierter Monat wird dafür entpackt (später neu gepackt)."""
+    row = c.execute("SELECT packed FROM archive_days WHERE date = ?", (iso,)).fetchone()
+    if row and row["packed"]:
+        _unpack_month(c, iso[:7])
+    det = c.execute("SELECT data FROM archive_details WHERE date = ?", (iso,)).fetchone()
+    details = json.loads(det["data"]) if det else {}
+    fn(details)
+    c.execute("INSERT OR REPLACE INTO archive_details (date, data) VALUES (?, ?)",
+              (iso, json.dumps(details, separators=(",", ":"))))
+
+
+def store_radiation_forecast(c, irr, days, loc):
+    """Stündliche Strahlungsprognose (unkorrigiert, Modellarchiv) und Tagessumme für vergangene Tage."""
+    for d in days:
+        iso = d.isoformat()
+        hourly = {k[11:13]: [round(v["ghi"]), round(v["dhi"]), round(v["temp"], 1)]
+                  for k, v in irr.items() if k.startswith(iso)}
+        if not hourly:
+            continue
+        c.execute("""
+            INSERT INTO archive_days (date, place, lat, lon, ghi_raw, rad_f) VALUES (?,?,?,?,?,1)
+            ON CONFLICT(date) DO UPDATE SET ghi_raw=COALESCE(archive_days.ghi_raw, excluded.ghi_raw),
+                                            rad_f=1, pv_config=NULL
+        """, (iso, loc.get("name"), loc["lat"], loc["lon"], pv.daily_ghi(irr, d)))
+        _update_details(c, iso, lambda det: det.setdefault("rad", {}).setdefault("f", hourly))
 
 
 def store_actuals(observed, days, loc):
@@ -127,10 +164,19 @@ def store_actuals(observed, days, loc):
     with _conn() as c:
         for d in days:
             iso = d.isoformat()
-            row = c.execute("SELECT packed, actual_h, ghi_actual FROM archive_days WHERE date = ?", (iso,)).fetchone()
+            row = c.execute("SELECT packed, actual_h, ghi_actual, rad_m FROM archive_days WHERE date = ?",
+                            (iso,)).fetchone()
             daylight = _daylight_hours(d, loc)
             # Nachts melden Stationen oft keinen Wert – vollständig heißt: jede Stunde mit Sonne ist gemessen
             ghi = {k[11:16]: v for k, v in observed.get("ghi", {}).items() if k.startswith(iso)}
+            if ghi and daylight <= ghi.keys() and (not row or not row["rad_m"]):
+                hourly = {h[:2]: round(v) for h, v in sorted(ghi.items()) if v}
+                c.execute("INSERT INTO archive_days (date, place, lat, lon) VALUES (?,?,?,?) "
+                          "ON CONFLICT(date) DO NOTHING", (iso, loc.get("name"), loc["lat"], loc["lon"]))
+                _update_details(c, iso, lambda det: det.setdefault("rad", {}).update(m=hourly))
+                c.execute("UPDATE archive_days SET rad_m = 1, pv_config = NULL WHERE date = ?", (iso,))
+                row = c.execute("SELECT packed, actual_h, ghi_actual, rad_m FROM archive_days WHERE date = ?",
+                                (iso,)).fetchone()
             if ghi and daylight <= ghi.keys() and (not row or row["ghi_actual"] is None):
                 c.execute("""
                     INSERT INTO archive_days (date, place, lat, lon, ghi_actual, ghi_station) VALUES (?,?,?,?,?,?)
@@ -187,12 +233,76 @@ def fill_actuals(settings, today):
     start = today - timedelta(days=ACTUAL_LOOKBACK_DAYS)
     with _conn() as c:
         missing = [date.fromisoformat(r["date"]) for r in c.execute(
-            "SELECT date FROM archive_days WHERE (actual_h IS NULL OR ghi_actual IS NULL) AND date >= ? AND date < ?",
+            "SELECT date FROM archive_days WHERE (actual_h IS NULL OR ghi_actual IS NULL OR rad_m = 0) "
+            "AND date >= ? AND date < ?",
             (start.isoformat(), today.isoformat()))]
     if not missing:
         return 0
     observed = sources.fetch_observed(min(missing), max(missing), loc)
     return store_actuals(observed, missing, loc)
+
+
+# ------------------------------------------------------------------ Solarertrag
+
+pv_state = {"running": False, "message": ""}
+_settings_for_queries = {}
+
+
+def _irr_from_details(day, rad):
+    """Stündliche Strahlung aus den Archivdetails: Prognose (mit damaliger Korrektur) und Messung.
+
+    Die Messung liefert nur Globalstrahlung; der Diffusanteil kommt aus der Prognose derselben Stunde.
+    """
+    iso = day.isoformat()
+    f, m, cf = rad.get("f") or {}, rad.get("m") or {}, rad.get("cf", 1.0)
+    fc = {f"{iso}T{h}:00": {"ghi": v[0] * cf, "dhi": v[1] * cf, "temp": v[2]} for h, v in f.items()}
+    meas = {}
+    for h, g in m.items():
+        fv = f.get(h)
+        share = min(1.0, fv[1] / fv[0]) if fv and fv[0] > 0 else 1.0
+        meas[f"{iso}T{h}:00"] = {"ghi": g, "dhi": g * share, "temp": fv[2] if fv else 15.0}
+    return fc if f else None, meas if m else None
+
+
+def recalc_pv(settings):
+    """Berechnet den Solarertrag aller Archivtage neu, deren Anlagen-/Standortkennung veraltet ist."""
+    if not settings["pv"]["enabled"] or not pv.active_arrays(settings["pv"]):
+        return 0
+    key = pv.config_key(settings)
+    with _conn() as c:
+        days = [r["date"] for r in c.execute(
+            "SELECT date FROM archive_days WHERE (rad_f = 1 OR rad_m = 1) "
+            "AND (pv_config IS NULL OR pv_config != ?) ORDER BY date", (key,))]
+    pv_state.update(running=True, message=f"Berechne Solarertrag für {len(days)} Tage …")
+    try:
+        updates = []
+        for iso in days:
+            d = date.fromisoformat(iso)
+            fc, meas = _irr_from_details(d, day_details(iso).get("rad", {}))
+            pv_fc = pv.day_yield(settings, d, fc)[0] if fc else None
+            pv_act = pv.day_yield(settings, d, meas)[0] if meas else None
+            updates.append((pv_fc, pv_act, key, iso))
+        with _conn() as c:
+            c.executemany("UPDATE archive_days SET pv_kwh = COALESCE(?, pv_kwh), pv_actual_kwh = ?, pv_config = ? "
+                          "WHERE date = ?", updates)
+        pv_state["message"] = f"Solarertrag für {len(days)} Tage berechnet."
+        return len(days)
+    finally:
+        pv_state["running"] = False
+
+
+def start_recalc_pv(settings):
+    if not pv_state["running"]:
+        threading.Thread(target=recalc_pv, args=(settings,), daemon=True).start()
+
+
+def _pv_hours(day):
+    settings = storage.load_settings()
+    if not settings["pv"]["enabled"] or not pv.active_arrays(settings["pv"]):
+        return None
+    fc, meas = _irr_from_details(day, day_details(day.isoformat()).get("rad", {}))
+    return {"forecast": pv.day_yield(settings, day, fc)[1] if fc else {},
+            "measured": pv.day_yield(settings, day, meas)[1] if meas else {}}
 
 
 # ------------------------------------------------------------------ Komprimierung
@@ -262,6 +372,7 @@ def daily_job(settings, mail_result=None):
         except Exception as e:  # noqa: BLE001
             log.warning("Messwerte nicht verfügbar: %s", e)
         pack_months(today)
+        recalc_pv(settings)
         storage.put("archive_state", {"last_run": today.isoformat()})
 
 
@@ -285,12 +396,13 @@ def backfill(settings, start, end):
             backfill_state["message"] = f"Lade {chunk_start:%m/%Y} …"
             days = [chunk_start + timedelta(days=i) for i in range((chunk_end - chunk_start).days + 1)]
             with _conn() as c:
-                rows = c.execute("SELECT date, kind, actual_h, ghi_raw, ghi_actual FROM archive_days "
+                rows = c.execute("SELECT date, kind, actual_h, ghi_raw, ghi_actual, rad_f, rad_m FROM archive_days "
                                  "WHERE date >= ? AND date <= ?",
                                  (chunk_start.isoformat(), chunk_end.isoformat())).fetchall()
             have = sum(r["kind"] is not None for r in rows)
-            have_ghi = {r["date"] for r in rows if r["ghi_raw"] is not None}
-            measured = {r["date"] for r in rows if r["actual_h"] is not None and r["ghi_actual"] is not None}
+            have_ghi = {r["date"] for r in rows if r["ghi_raw"] is not None and r["rad_f"]}
+            measured = {r["date"] for r in rows
+                        if r["actual_h"] is not None and r["ghi_actual"] is not None and r["rad_m"]}
             need_actual = [d for d in days if d.isoformat() not in measured]
             raw = None
             if have < len(days):  # Modellarchiv nur abfragen, wenn Prognosen fehlen
@@ -306,12 +418,7 @@ def backfill(settings, start, end):
                     weights = pv.source_weights(settings, rad)
                     irr = pv._irradiance({k: rad[k] for k in weights}, weights)
                     with _job_lock, _conn() as c:
-                        for d in need_ghi:
-                            if any(k.startswith(d.isoformat()) for k in irr):
-                                c.execute("""
-                                    INSERT INTO archive_days (date, place, lat, lon, ghi_raw) VALUES (?,?,?,?,?)
-                                    ON CONFLICT(date) DO UPDATE SET ghi_raw=excluded.ghi_raw
-                                """, (d.isoformat(), loc.get("name"), loc["lat"], loc["lon"], pv.daily_ghi(irr, d)))
+                        store_radiation_forecast(c, irr, need_ghi, loc)
                 except Exception as e:  # noqa: BLE001
                     log.warning("Strahlungsarchiv %s nicht verfügbar: %s", chunk_start, e)
                     failed.append(f"{chunk_start:%m/%Y} (Strahlung)")
@@ -332,6 +439,8 @@ def backfill(settings, start, end):
         with _job_lock:
             tz = ZoneInfo(loc["timezone"])
             packed = pack_months(datetime.now(tz).date())
+        backfill_state["message"] = "Berechne Solarertrag …"
+        recalc_pv(settings)
         backfill_state["message"] = (f"Fertig: {backfill_state['total']} Tage verarbeitet"
                                      + (f", {len(packed)} Monate komprimiert" if packed else "")
                                      + (f". Fehlgeschlagen: {', '.join(failed)} – bitte erneut nachladen."
@@ -378,6 +487,7 @@ def _aggregate(rows):
         "possible_h": total("possible_h"),
         "pv_kwh": total("pv_kwh"),
         "ghi_actual": total("ghi_actual"),
+        "pv_actual_kwh": total("pv_actual_kwh"),
         "actual_days": sum(r["actual_h"] is not None for r in rows),
         "forecast_days": sum(r["forecast_h"] is not None for r in rows),
         "mae_h": round(sum(abs(f - a) for f, a in pairs) / len(pairs), 2) if pairs else None,
@@ -389,7 +499,8 @@ def _day_row(r):
     d = date.fromisoformat(r["date"])
     return {"key": r["date"], "label": f"{['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'][d.weekday()]} {d:%d.%m.}",
             "forecast_h": r["forecast_h"], "raw_h": r["raw_h"], "actual_h": r["actual_h"],
-            "possible_h": r["possible_h"], "pv_kwh": r["pv_kwh"], "ghi_actual": r["ghi_actual"],
+            "possible_h": r["possible_h"], "pv_kwh": r["pv_kwh"], "pv_actual_kwh": r["pv_actual_kwh"],
+            "ghi_actual": r["ghi_actual"],
             "kind": r["kind"], "packed": bool(r["packed"])}
 
 
@@ -424,6 +535,7 @@ def query(mode, year=None, month=None, week=None, day=None):
                          f"{day:%d.%m.%Y}",
                 "day": r, "kind_label": KIND_LABELS.get(r["kind"]) if r else None,
                 "details": day_details(day.isoformat()) if r else {},
+                "pv_hours": _pv_hours(day) if r else None,
                 "summary": _aggregate(rows)}
     raise ValueError("Unbekannte Ansicht")
 
@@ -451,4 +563,4 @@ def meta():
     return {**span, "packed_days": span["packed_days"] or 0, "years": years,
             "packed_months": packs["months"], "raw_bytes": packs["raw"] or 0, "packed_bytes": packs["packed"] or 0,
             "open_detail_bytes": open_bytes, "db_bytes": size,
-            "backfill": backfill_state, "last_run": storage.get("archive_state", {}).get("last_run")}
+            "backfill": backfill_state, "pv_recalc": pv_state, "last_run": storage.get("archive_state", {}).get("last_run")}

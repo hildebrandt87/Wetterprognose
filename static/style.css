@@ -186,14 +186,15 @@ label.check input { width: auto; }
 .kpi b { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
 .kpi small { color: var(--muted); font-size: .8rem; }
 .sw.measured { background: var(--measured); }
-#ar-chart { width: 100%; min-width: 520px; height: 260px; display: block; }
-#ar-chart text { fill: var(--muted); font-size: 11px; }
-#ar-chart .grid { stroke: var(--line); }
-#ar-chart .bar-possible { fill: var(--possible); }
-#ar-chart .bar-fc { fill: var(--sun); }
-#ar-chart .bar-act { fill: var(--measured); }
-#ar-chart .hit { fill: transparent; cursor: pointer; }
-#ar-chart .hit:hover { fill: rgb(127 127 127 / .08); }
+svg.bars { width: 100%; min-width: 520px; height: 260px; display: block; }
+svg.bars text { fill: var(--muted); font-size: 11px; }
+svg.bars .grid { stroke: var(--line); }
+svg.bars .bar-possible { fill: var(--possible); }
+svg.bars .bar-fc { fill: var(--sun); }
+svg.bars .bar-act { fill: var(--measured); }
+svg.bars .bar-pv { fill: var(--pv); }
+svg.bars .hit { fill: transparent; cursor: pointer; }
+svg.bars .hit:hover { fill: rgb(127 127 127 / .08); }
 .tbl tr.clickable { cursor: pointer; }
 .tbl tr.clickable:hover td { background: var(--possible); }
 .tbl .diff-pos { color: var(--sun-strong); }

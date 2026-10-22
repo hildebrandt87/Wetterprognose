@@ -58,7 +58,12 @@ Unter Einstellungen → Photovoltaik beliebig viele Modulfelder (Anzahl, Wp je M
 Systemverluste, Wechselrichtergrenze und Temperaturkoeffizient eintragen. Berechnung je Stunde: gewichtetes Mittel von
 Global- und Diffusstrahlung (4 Modelle + MOSMIX), Transposition auf die Modulebene (isotropes Himmelsmodell, Direktanteil
 entfällt hinter dem Horizontprofil), Zelltemperatur nach NOCT, Verluste, Wechselrichterbegrenzung. Zum Vergleich der Ertrag
-bei wolkenlosem Himmel (Haurwitz). Die Tagesprognose wird im Archiv mitgespeichert.
+bei wolkenlosem Himmel (Haurwitz).
+
+Im Archiv werden Strahlungsprognose und gemessene Globalstrahlung **stündlich** gespeichert. Daraus wird der
+Solarertrag je Tag zweimal berechnet: aus der Prognose und aus der Messung („was die Anlage bei der tatsächlichen
+Einstrahlung ungefähr erzeugt hätte“ – kein Zählerwert). Ändern sich Anlage, Horizont oder Standort, rechnet die App
+die gesamte Historie automatisch lokal neu (Kennung `pv_config`). Die Archiv-Ansicht zeigt beides als Diagramm.
 
 ## Lernende Monatskorrektur
 
