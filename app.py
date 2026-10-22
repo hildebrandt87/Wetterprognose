@@ -166,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/archive/meta":
                 return self._json(archive.meta())
             if url.path == "/api/correction":
-                return self._json(correction.report())
+                return self._json(correction.report(q.get("metric", "sun")))
             if url.path == "/api/status":
                 return self._json(storage.get("mail_state", {}))
             return self._json({"error": "nicht gefunden"}, 404)

@@ -52,6 +52,14 @@ Bei Gmail/GMX/Web.de ein App-Passwort verwenden (Gmail: `smtp.gmail.com`, Port 5
 5. **Auswertung:** Summe = Sonnenstunden; Stunden ≥ Schwelle (Standard 30 min) ergeben die sonnigen Zeitfenster;
    Streuung der Quellen → Zuverlässigkeit; Anteil der Quellen mit `f ≥ 0,5` → Sonnenwahrscheinlichkeit.
 
+## Photovoltaik
+
+Unter Einstellungen → Photovoltaik beliebig viele Modulfelder (Anzahl, Wp je Modul, Neigung, Ausrichtung) sowie
+Systemverluste, Wechselrichtergrenze und Temperaturkoeffizient eintragen. Berechnung je Stunde: gewichtetes Mittel von
+Global- und Diffusstrahlung (4 Modelle + MOSMIX), Transposition auf die Modulebene (isotropes Himmelsmodell, Direktanteil
+entfällt hinter dem Horizontprofil), Zelltemperatur nach NOCT, Verluste, Wechselrichterbegrenzung. Zum Vergleich der Ertrag
+bei wolkenlosem Himmel (Haurwitz). Die Tagesprognose wird im Archiv mitgespeichert.
+
 ## Lernende Monatskorrektur
 
 Die Wettermodelle überschätzen die Sonne lokal systematisch (z. B. Nebel/Hochnebel im Winter). Aus dem Archiv wird je
@@ -60,6 +68,10 @@ bei < 15 Tagen Jahresmittel, Schrumpfung Richtung 1 bei wenigen Daten, begrenzt 
 auf jede Quelle angewendet. Im Archiv wird zusätzlich die unkorrigierte Prognose (`raw_h`) gespeichert, damit die Korrektur
 nie aus ihren eigenen Ergebnissen lernt. Die Güte zeigt die Archiv-Ansicht per Leave-one-out-Kreuzvalidierung.
 Abschaltbar unter Einstellungen → Berechnung.
+
+Für den Solarertrag gibt es eine zweite, gleich aufgebaute Korrektur der **Globalstrahlung**: Prognose (gewichtetes
+Modellmittel, `ghi_raw`) gegen die gemessene Globalstrahlung der nächsten DWD-Station (`ghi_actual`). Der Faktor
+skaliert Global- und Diffusstrahlung vor der Umrechnung auf die Module.
 
 ## Archiv
 
@@ -79,6 +91,7 @@ Abschaltbar unter Einstellungen → Berechnung.
 - `sun.py` – Sonnenstand und mögliche Sonnenminuten
 - `archive.py` – Archiv: Tagesjob, Messwerte, Komprimierung, Nachladen, Abfragen
 - `correction.py` – lernende Monatskorrektur und deren Kreuzvalidierung
+- `pv.py` – Photovoltaik-Ertragsprognose
 - `mailer.py` – Mail-Inhalt (Text + HTML) und SMTP-Versand
 - `storage.py` – Einstellungen in `data/wetterprognose.db` (SQLite; enthält das SMTP-Passwort im Klartext)
 - `static/` – Webfrontend

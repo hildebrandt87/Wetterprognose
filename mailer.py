@@ -26,6 +26,25 @@ def _correction_text(result):
             + f" ({basis}, {c['days']} Archivtage) – Modelle allein: {_de(result['raw_total_hours'])} h")
 
 
+def _pv_ok(result):
+    return bool(result.get("pv")) and not result["pv"].get("error")
+
+
+def _pv_html(result):
+    if not _pv_ok(result):
+        return ""
+    p = result["pv"]
+    c = p.get("correction")
+    corr = (f"<br>Strahlung korrigiert mit Faktor {c['factor']:.2f}".replace(".", ",")
+            + f" – Modelle allein: {_de(p['raw_kwh'])}&nbsp;kWh") if c and abs(p["raw_kwh"] - p["kwh"]) >= 0.05 else ""
+    arrays = " · ".join(f"{html.escape(a['name'])} {_de(a['kwh'])} kWh" for a in p["arrays"]) if len(p["arrays"]) > 1 else ""
+    return f"""<div style="background:#f0fdf4;border-radius:10px;padding:12px 14px;margin:16px 0">
+    <div style="color:#555;font-size:13px">Solarertrag ({_de(p['kwp'])} kWp)</div>
+    <div style="font-size:28px;font-weight:700;color:#16a34a">{_de(p['kwh'])}&nbsp;kWh</div>
+    <div style="color:#555;font-size:13px">wolkenlos möglich {_de(p['clear_kwh'])}&nbsp;kWh ·
+      Spitze {_de(p['peak_kw'])}&nbsp;kW um {p['peak_hour']} Uhr{('<br>' + arrays) if arrays else ''}{corr}</div></div>"""
+
+
 def _windows_text(result):
     if not result["windows"]:
         return "Keine längeren Sonnenphasen erwartet."
@@ -48,6 +67,9 @@ def build_message(result, settings):
         f"Sonnige Zeitfenster: {_windows_text(result)}",
         f"Zuverlässigkeit: {result['confidence_label']}",
         *([f"Korrigiert mit Faktor {_correction_text(result)}"] if result.get("correction") else []),
+        *([f"Solarertrag: {_de(result['pv']['kwh'])} kWh (wolkenlos {_de(result['pv']['clear_kwh'])} kWh, "
+            f"{_de(result['pv']['kwp'])} kWp, Spitze {_de(result['pv']['peak_kw'])} kW um {result['pv']['peak_hour']})"]
+          if _pv_ok(result) else []),
         "",
         "Stunde   Sonne   Wahrscheinlichkeit",
     ]
@@ -87,6 +109,7 @@ def build_message(result, settings):
    if result.get("correction") else ""}
   <p style="margin:0 0 4px">Sonnenaufgang <b>{result['sunrise']}</b> · Sonnenuntergang <b>{result['sunset']}</b><br>
      Sonne über deinem Horizont: {result['visible_from'] or '–'} – {result['visible_to'] or '–'}</p>
+  {_pv_html(result)}
   <h3 style="margin:18px 0 6px">Sonnige Zeitfenster</h3>
   <ul style="margin:0;padding-left:20px">{windows}</ul>
   <h3 style="margin:18px 0 6px">Stundenverlauf</h3>

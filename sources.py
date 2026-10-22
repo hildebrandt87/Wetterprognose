@@ -58,37 +58,44 @@ def _hour_key(dt):
     return dt.strftime("%Y-%m-%dT%H:00")
 
 
-def fetch_open_meteo(keys, start: date, end: date, loc, historical=False):
-    """Ein Request für alle aktivierten Open-Meteo-Modelle (historical: archivierte Modellläufe)."""
+def _open_meteo(keys, start: date, end: date, loc, variables, historical=False):
+    """Ein Request für alle Modelle. Ergebnis: {Quelle: {Variable: {Stundenschlüssel: Wert}}}.
+
+    Open-Meteo-Summen/Mittel gelten für die vorangegangene Stunde -> Intervallbeginn = Zeitstempel − 1 h.
+    """
     models = [SOURCES[k]["model"] for k in keys]
     host = "historical-forecast-api.open-meteo.com" if historical else "api.open-meteo.com"
     data = get_json(f"https://{host}/v1/forecast", {
         "latitude": loc["lat"], "longitude": loc["lon"],
-        "hourly": "sunshine_duration",
+        "hourly": ",".join(variables),
         "models": ",".join(models),
         "timezone": loc["timezone"],
         "start_date": start.isoformat(),
         "end_date": (end + timedelta(days=1)).isoformat(),
     })
     hourly = data["hourly"]
+    starts = [_hour_key(datetime.fromisoformat(ts) - timedelta(hours=1)) for ts in hourly["time"]]
     results = {}
     for key, model in zip(keys, models):
-        series = hourly.get(f"sunshine_duration_{model}")
-        if series is None and len(models) == 1:
-            series = hourly.get("sunshine_duration")
-        values = {}
-        for ts, sec in zip(hourly["time"], series or []):
-            if sec is None:
-                continue
-            # Open-Meteo: Summe der vorangegangenen Stunde -> Intervallbeginn = ts - 1h
-            start = datetime.fromisoformat(ts) - timedelta(hours=1)
-            values[_hour_key(start)] = sec / 60
-        results[key] = {"values": values, "meta": {}}
+        per_var = {}
+        for var in variables:
+            series = hourly.get(f"{var}_{model}")
+            if series is None and len(models) == 1:
+                series = hourly.get(var)
+            per_var[var] = {k: v for k, v in zip(starts, series or []) if v is not None}
+        results[key] = per_var
     return results
 
 
-def fetch_mosmix(day: date, loc):
-    tz = ZoneInfo(loc["timezone"])
+def fetch_open_meteo(keys, start: date, end: date, loc, historical=False):
+    """Sonnenminuten je Stunde aller aktivierten Open-Meteo-Modelle (historical: archivierte Modellläufe)."""
+    data = _open_meteo(keys, start, end, loc, ["sunshine_duration"], historical)
+    return {k: {"values": {h: sec / 60 for h, sec in v["sunshine_duration"].items()}, "meta": {}}
+            for k, v in data.items()}
+
+
+def _mosmix(day: date, loc):
+    """Bright-Sky-Datensätze (MOSMIX) eines Tages, Stationsangaben und Entfernungsgewicht."""
     data = get_json("https://api.brightsky.dev/weather", {
         "lat": loc["lat"], "lon": loc["lon"],
         "date": f"{day.isoformat()}T01:00",
@@ -96,25 +103,67 @@ def fetch_mosmix(day: date, loc):
         "tz": loc["timezone"],
     })
     stations = {s["id"]: s for s in data.get("sources", [])}
-    values, used = {}, set()
-    for rec in data.get("weather", []):
+    records = data.get("weather", [])
+    station = next((stations[r["source_id"]] for r in records if r["source_id"] in stations), None)
+    distance = station["distance"] if station else None
+    factor = 0.0 if distance is None else max(0.0, 1 - distance / MOSMIX_MAX_DISTANCE_M)
+    meta = {"station": station["station_name"] if station else None,
+            "distance_km": round(distance / 1000, 1) if distance is not None else None}
+    return records, factor, meta
+
+
+def fetch_mosmix(day: date, loc):
+    tz = ZoneInfo(loc["timezone"])
+    records, factor, meta = _mosmix(day, loc)
+    values = {}
+    for rec in records:
         if rec.get("sunshine") is None:
             continue
         # Bright Sky: Sonnenminuten der vorangegangenen Stunde
         start = datetime.fromisoformat(rec["timestamp"]).astimezone(tz) - timedelta(hours=1)
         values[_hour_key(start)] = float(rec["sunshine"])
-        used.add(rec["source_id"])
-    station = next((stations[i] for i in used if i in stations), None)
-    distance = station["distance"] if station else None
-    factor = 0.0 if distance is None else max(0.0, 1 - distance / MOSMIX_MAX_DISTANCE_M)
-    return {"values": values, "weight_factor": factor, "meta": {
-        "station": station["station_name"] if station else None,
-        "distance_km": round(distance / 1000, 1) if distance is not None else None,
-    }}
+    return {"values": values, "weight_factor": factor, "meta": meta}
+
+
+def fetch_radiation(start: date, end: date, loc, source_settings, historical=False):
+    """Global-/Diffusstrahlung (W/m², Stundenmittel) und Lufttemperatur je Stunde.
+
+    Ergebnis wie fetch_all: {Quelle: {"values": {Stunde: {"ghi", "dhi", "temp"}}}}; MOSMIX ohne Diffusanteil
+    und nur für Prognosen (historical=False, ein Tag).
+    """
+    enabled = [k for k in SOURCES if source_settings.get(k, {}).get("enabled", True)]
+    out = {}
+    om_keys = [k for k in enabled if "model" in SOURCES[k]]
+    if om_keys:
+        try:
+            data = _open_meteo(om_keys, start, end, loc,
+                               ["shortwave_radiation", "diffuse_radiation", "temperature_2m"], historical)
+            for k, v in data.items():
+                out[k] = {"values": {h: {"ghi": ghi, "dhi": v["diffuse_radiation"].get(h),
+                                         "temp": v["temperature_2m"].get(h)}
+                                     for h, ghi in v["shortwave_radiation"].items()}}
+        except Exception as e:  # noqa: BLE001
+            for k in om_keys:
+                out[k] = {"error": str(e), "values": {}}
+    if "mosmix" in enabled and not historical:
+        try:
+            tz = ZoneInfo(loc["timezone"])
+            records, factor, meta = _mosmix(start, loc)
+            values = {}
+            for rec in records:
+                if rec.get("solar") is None:
+                    continue
+                start = datetime.fromisoformat(rec["timestamp"]).astimezone(tz) - timedelta(hours=1)
+                # solar: kWh/m² der vorangegangenen Stunde = mittlere kW/m²
+                values[_hour_key(start)] = {"ghi": rec["solar"] * 1000, "dhi": None, "temp": rec.get("temperature")}
+            out["mosmix"] = {"values": values, "weight_factor": factor, "meta": meta}
+        except Exception as e:  # noqa: BLE001
+            out["mosmix"] = {"error": str(e), "values": {}}
+    return out
 
 
 def fetch_observed(start: date, end: date, loc, max_distance_m=50000):
-    """Gemessene Sonnenminuten je lokaler Stunde von der nächsten DWD-Station mit Sonnenscheinsensor."""
+    """Gemessene Sonnenminuten und Globalstrahlung (Wh/m²) je lokaler Stunde der nächsten DWD-Stationen."""
     tz = ZoneInfo(loc["timezone"])
     data = get_json("https://api.brightsky.dev/weather", {
         "lat": loc["lat"], "lon": loc["lon"],
@@ -123,20 +172,26 @@ def fetch_observed(start: date, end: date, loc, max_distance_m=50000):
         "tz": loc["timezone"],
     })
     stations = {s["id"]: s for s in data.get("sources", [])}
-    values, station = {}, None
-    for rec in data.get("weather", []):
-        if rec.get("sunshine") is None:
-            continue
-        sid = (rec.get("fallback_source_ids") or {}).get("sunshine", rec["source_id"])
+    out = {"values": {}, "ghi": {}, "station": None, "distance_km": None, "ghi_station": None}
+
+    def measuring_station(rec, field):
+        sid = (rec.get("fallback_source_ids") or {}).get(field, rec["source_id"])
         st = stations.get(sid)
         if not st or st["observation_type"] == "forecast" or st["distance"] > max_distance_m:
-            continue
-        station = station or st
-        # Messwert gilt für die vorangegangene Stunde
-        begin = datetime.fromisoformat(rec["timestamp"]).astimezone(tz) - timedelta(hours=1)
-        values[_hour_key(begin)] = float(rec["sunshine"])
-    return {"values": values, "station": station["station_name"] if station else None,
-            "distance_km": round(station["distance"] / 1000, 1) if station else None}
+            return None
+        return st
+
+    for rec in data.get("weather", []):
+        # Messwerte gelten für die vorangegangene Stunde
+        key = _hour_key(datetime.fromisoformat(rec["timestamp"]).astimezone(tz) - timedelta(hours=1))
+        if rec.get("sunshine") is not None and (st := measuring_station(rec, "sunshine")):
+            out["values"][key] = float(rec["sunshine"])
+            if not out["station"]:
+                out["station"], out["distance_km"] = st["station_name"], round(st["distance"] / 1000, 1)
+        if rec.get("solar") is not None and (st := measuring_station(rec, "solar")):
+            out["ghi"][key] = rec["solar"] * 1000
+            out["ghi_station"] = out["ghi_station"] or f"{st['station_name']} ({round(st['distance'] / 1000, 1)} km)"
+    return out
 
 
 def fetch_met(day: date, loc, contact=""):

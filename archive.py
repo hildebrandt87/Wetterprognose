@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import forecast
+import pv
 import sources
 import storage
 from sun import solar_position
@@ -44,7 +45,9 @@ def _conn():
             kind TEXT, forecast_at TEXT,
             actual_h REAL, actual_station TEXT,
             packed INTEGER NOT NULL DEFAULT 0,
-            raw_h REAL
+            raw_h REAL,
+            pv_kwh REAL,
+            ghi_raw REAL, ghi_actual REAL, ghi_station TEXT
         );
         CREATE TABLE IF NOT EXISTS archive_details (date TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS archive_months (
@@ -58,6 +61,11 @@ def _conn():
         c.execute("ALTER TABLE archive_days ADD COLUMN raw_h REAL")
         c.execute("UPDATE archive_days SET raw_h = forecast_h")
         c.commit()
+    # Spätere Spalten nachrüsten (bestehende Datenbanken)
+    for col, typ in (("pv_kwh", "REAL"), ("ghi_raw", "REAL"), ("ghi_actual", "REAL"), ("ghi_station", "TEXT")):
+        if col not in cols and "raw_h" in cols:
+            c.execute(f"ALTER TABLE archive_days ADD COLUMN {col} {typ}")
+            c.commit()
     c.row_factory = _dict_row
     return c
 
@@ -84,16 +92,17 @@ def store_forecast(result, kind, overwrite=False):
             return False
         c.execute("""
             INSERT INTO archive_days (date, place, lat, lon, forecast_h, possible_h, daylength_h, confidence,
-                                      sunrise, sunset, kind, forecast_at, raw_h)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                      sunrise, sunset, kind, forecast_at, raw_h, pv_kwh, ghi_raw)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
               place=excluded.place, lat=excluded.lat, lon=excluded.lon, forecast_h=excluded.forecast_h,
               possible_h=excluded.possible_h, daylength_h=excluded.daylength_h, confidence=excluded.confidence,
               sunrise=excluded.sunrise, sunset=excluded.sunset, kind=excluded.kind, forecast_at=excluded.forecast_at,
-              raw_h=excluded.raw_h
+              raw_h=excluded.raw_h, pv_kwh=excluded.pv_kwh, ghi_raw=excluded.ghi_raw
         """, (day, loc.get("name"), loc["lat"], loc["lon"], result["total_hours"], result["possible_hours"],
               result["daylength_hours"], result["confidence"], result["sunrise"], result["sunset"],
-              kind, result["generated"], result.get("raw_total_hours", result["total_hours"])))
+              kind, result["generated"], result.get("raw_total_hours", result["total_hours"]),
+              (result.get("pv") or {}).get("kwh"), (result.get("radiation") or {}).get("ghi_raw")))
         details = {}
         row = c.execute("SELECT data FROM archive_details WHERE date = ?", (day,)).fetchone()
         if row:
@@ -113,17 +122,25 @@ def store_forecast(result, kind, overwrite=False):
 
 
 def store_actuals(observed, days, loc):
-    """Trägt gemessene Sonnenminuten für die angegebenen Tage ein (sofern vollständig genug)."""
+    """Trägt gemessene Sonnenminuten und Globalstrahlung ein – nur fehlende Werte, nur vollständige Tage."""
     stored = 0
     with _conn() as c:
         for d in days:
             iso = d.isoformat()
-            hours = {k[11:16]: v for k, v in observed["values"].items() if k.startswith(iso)}
+            row = c.execute("SELECT packed, actual_h, ghi_actual FROM archive_days WHERE date = ?", (iso,)).fetchone()
+            daylight = _daylight_hours(d, loc)
             # Nachts melden Stationen oft keinen Wert – vollständig heißt: jede Stunde mit Sonne ist gemessen
-            if not hours or not _daylight_hours(d, loc) <= hours.keys():
+            ghi = {k[11:16]: v for k, v in observed.get("ghi", {}).items() if k.startswith(iso)}
+            if ghi and daylight <= ghi.keys() and (not row or row["ghi_actual"] is None):
+                c.execute("""
+                    INSERT INTO archive_days (date, place, lat, lon, ghi_actual, ghi_station) VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(date) DO UPDATE SET ghi_actual=excluded.ghi_actual, ghi_station=excluded.ghi_station
+                """, (iso, loc.get("name"), loc["lat"], loc["lon"], round(sum(ghi.values()) / 1000, 2),
+                      observed.get("ghi_station")))
+            hours = {k[11:16]: v for k, v in observed["values"].items() if k.startswith(iso)}
+            if not hours or not daylight <= hours.keys() or (row and row["actual_h"] is not None):
                 continue
             total_h = round(sum(hours.values()) / 60, 1)
-            row = c.execute("SELECT packed FROM archive_days WHERE date = ?", (iso,)).fetchone()
             if row and row["packed"]:
                 _unpack_month(c, iso[:7])
             c.execute("""
@@ -170,7 +187,7 @@ def fill_actuals(settings, today):
     start = today - timedelta(days=ACTUAL_LOOKBACK_DAYS)
     with _conn() as c:
         missing = [date.fromisoformat(r["date"]) for r in c.execute(
-            "SELECT date FROM archive_days WHERE actual_h IS NULL AND packed = 0 AND date >= ? AND date < ?",
+            "SELECT date FROM archive_days WHERE (actual_h IS NULL OR ghi_actual IS NULL) AND date >= ? AND date < ?",
             (start.isoformat(), today.isoformat()))]
     if not missing:
         return 0
@@ -268,10 +285,12 @@ def backfill(settings, start, end):
             backfill_state["message"] = f"Lade {chunk_start:%m/%Y} …"
             days = [chunk_start + timedelta(days=i) for i in range((chunk_end - chunk_start).days + 1)]
             with _conn() as c:
-                rows = c.execute("SELECT date, kind, actual_h FROM archive_days WHERE date >= ? AND date <= ?",
+                rows = c.execute("SELECT date, kind, actual_h, ghi_raw, ghi_actual FROM archive_days "
+                                 "WHERE date >= ? AND date <= ?",
                                  (chunk_start.isoformat(), chunk_end.isoformat())).fetchall()
             have = sum(r["kind"] is not None for r in rows)
-            measured = {r["date"] for r in rows if r["actual_h"] is not None}
+            have_ghi = {r["date"] for r in rows if r["ghi_raw"] is not None}
+            measured = {r["date"] for r in rows if r["actual_h"] is not None and r["ghi_actual"] is not None}
             need_actual = [d for d in days if d.isoformat() not in measured]
             raw = None
             if have < len(days):  # Modellarchiv nur abfragen, wenn Prognosen fehlen
@@ -280,6 +299,22 @@ def backfill(settings, start, end):
                 except Exception as e:  # noqa: BLE001
                     log.warning("Modellarchiv %s nicht verfügbar: %s", chunk_start, e)
                     failed.append(f"{chunk_start:%m/%Y}")
+            need_ghi = [d for d in days if d.isoformat() not in have_ghi]
+            if need_ghi:  # Strahlungsprognose aus dem Modellarchiv für die Strahlungskorrektur
+                try:
+                    rad = sources.fetch_radiation(min(need_ghi), max(need_ghi), loc, settings["sources"], historical=True)
+                    weights = pv.source_weights(settings, rad)
+                    irr = pv._irradiance({k: rad[k] for k in weights}, weights)
+                    with _job_lock, _conn() as c:
+                        for d in need_ghi:
+                            if any(k.startswith(d.isoformat()) for k in irr):
+                                c.execute("""
+                                    INSERT INTO archive_days (date, place, lat, lon, ghi_raw) VALUES (?,?,?,?,?)
+                                    ON CONFLICT(date) DO UPDATE SET ghi_raw=excluded.ghi_raw
+                                """, (d.isoformat(), loc.get("name"), loc["lat"], loc["lon"], pv.daily_ghi(irr, d)))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Strahlungsarchiv %s nicht verfügbar: %s", chunk_start, e)
+                    failed.append(f"{chunk_start:%m/%Y} (Strahlung)")
             observed = {"values": {}}
             if need_actual:
                 try:
@@ -291,7 +326,7 @@ def backfill(settings, start, end):
                     with _job_lock:
                         store_forecast(forecast.evaluate(settings, d, raw, correct=False), "rekonstruiert")
                 backfill_state["done"] += 1
-            if observed["values"]:
+            if observed["values"] or observed.get("ghi"):
                 with _job_lock:
                     store_actuals(observed, need_actual, loc)
         with _job_lock:
@@ -341,6 +376,8 @@ def _aggregate(rows):
         "forecast_h": total("forecast_h"),
         "actual_h": total("actual_h"),
         "possible_h": total("possible_h"),
+        "pv_kwh": total("pv_kwh"),
+        "ghi_actual": total("ghi_actual"),
         "actual_days": sum(r["actual_h"] is not None for r in rows),
         "forecast_days": sum(r["forecast_h"] is not None for r in rows),
         "mae_h": round(sum(abs(f - a) for f, a in pairs) / len(pairs), 2) if pairs else None,
@@ -352,7 +389,7 @@ def _day_row(r):
     d = date.fromisoformat(r["date"])
     return {"key": r["date"], "label": f"{['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'][d.weekday()]} {d:%d.%m.}",
             "forecast_h": r["forecast_h"], "raw_h": r["raw_h"], "actual_h": r["actual_h"],
-            "possible_h": r["possible_h"],
+            "possible_h": r["possible_h"], "pv_kwh": r["pv_kwh"], "ghi_actual": r["ghi_actual"],
             "kind": r["kind"], "packed": bool(r["packed"])}
 
 

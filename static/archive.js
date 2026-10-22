@@ -4,7 +4,7 @@
 const MONTH_NAMES = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
   "August", "September", "Oktober", "November", "Dezember"];
 
-const ar = { mode: "month", year: 0, month: 1, week: 1, day: "", meta: null, inited: false };
+const ar = { corrMetric: "sun", mode: "month", year: 0, month: 1, week: 1, day: "", meta: null, inited: false };
 
 const pad = (n) => String(n).padStart(2, "0");
 const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -112,7 +112,7 @@ async function loadArchive() {
   $("#ar-error").hidden = true;
   try {
     const [data, meta, corr] = await Promise.all(
-      [api(`/api/archive?${q}`), api("/api/archive/meta"), api("/api/correction")]);
+      [api(`/api/archive?${q}`), api("/api/archive/meta"), api(`/api/correction?metric=${ar.corrMetric}`)]);
     ar.meta = meta;
     renderMeta(meta);
     renderCorrection(corr);
@@ -180,8 +180,11 @@ function drill(target, key) {
 
 function renderTable(data) {
   const isYear = ar.mode === "year";
+  const hasPv = data.rows.some((r) => r.pv_kwh != null);
+  const pvCell = (v) => (hasPv ? `<td class="num">${v == null ? "–" : `${fmt1(v)} kWh`}</td>` : "");
   const head = `<tr><th>${isYear ? "Monat" : "Tag"}</th><th class="num">Prognose</th><th class="num">Gemessen</th>
-    <th class="num">Abweichung</th><th class="num">möglich</th><th>${isYear ? "Tage" : "Art"}</th></tr>`;
+    <th class="num">Abweichung</th><th class="num">möglich</th>${hasPv ? '<th class="num">Solar (Prognose)</th>' : ""}
+    <th>${isYear ? "Tage" : "Art"}</th></tr>`;
   const rows = data.rows.filter((r) => !isYear || r.days).map((r) => {
     const diff = r.forecast_h != null && r.actual_h != null ? r.forecast_h - r.actual_h : null;
     const diffCell = diff == null ? "–"
@@ -191,11 +194,11 @@ function renderTable(data) {
       : `<span class="tag">${{ vortag: "Vortag", gleicher_tag: "selber Tag", rekonstruiert: "rekonstruiert" }[r.kind] || "nur Messung"}</span>`;
     const label = isYear ? MONTH_NAMES[Number(r.key.slice(5)) - 1] : r.label;
     return `<tr class="clickable" data-key="${r.key}"><td>${label}</td><td class="num">${fmtH(r.forecast_h)}</td>
-      <td class="num">${fmtH(r.actual_h)}</td><td class="num">${diffCell}</td><td class="num">${fmtH(r.possible_h)}</td><td>${last}</td></tr>`;
+      <td class="num">${fmtH(r.actual_h)}</td><td class="num">${diffCell}</td><td class="num">${fmtH(r.possible_h)}</td>${pvCell(r.pv_kwh)}<td>${last}</td></tr>`;
   }).join("");
   const s = data.summary;
   const total = `<tr><td><b>Summe</b></td><td class="num"><b>${fmtH(s.forecast_h)}</b></td><td class="num"><b>${fmtH(s.actual_h)}</b></td>
-    <td></td><td class="num">${fmtH(s.possible_h)}</td><td></td></tr>`;
+    <td></td><td class="num">${fmtH(s.possible_h)}</td>${pvCell(s.pv_kwh)}<td></td></tr>`;
   $("#ar-table").innerHTML = head + rows + total;
   $("#ar-table").onclick = (e) => {
     const tr = e.target.closest("tr[data-key]");
@@ -228,6 +231,10 @@ function renderDay(data) {
       <div><span class="label">Art der Prognose</span><b>${esc(data.kind_label || "keine Prognose")}</b></div>
       <div><span class="label">Erstellt</span><b>${esc(data.day.forecast_at || "–")}</b></div>
       <div><span class="label">Zuverlässigkeit</span><b>${esc(det.forecast?.confidence_label || "–")}</b></div>
+      <div><span class="label">Globalstrahlung Prognose / gemessen</span><b>${data.day.ghi_raw == null ? "–"
+        : data.day.ghi_raw.toLocaleString("de-DE")} / ${data.day.ghi_actual == null ? "–"
+        : data.day.ghi_actual.toLocaleString("de-DE")} kWh/m²</b></div>
+      ${data.day.pv_kwh != null ? `<div><span class="label">Solarertrag (Prognose)</span><b>${fmt1(data.day.pv_kwh)} kWh</b></div>` : ""}
       <div><span class="label">Korrektur</span><b>${det.forecast?.correction
         ? `Faktor ${det.forecast.correction.factor.toLocaleString("de-DE")} (Modelle ${fmtH(data.day.raw_h)})`
         : "keine"}</b></div>
@@ -289,22 +296,28 @@ function niceMax(v) {
 
 /* ---------------- Lernende Korrektur ---------------- */
 function renderCorrection(c) {
+  const ghi = c.metric === "ghi";
+  const unit = ghi ? "kWh/m²" : "h";
+  const num = (v) => v.toLocaleString("de-DE", { minimumFractionDigits: ghi ? 2 : 1, maximumFractionDigits: ghi ? 2 : 1 });
+  const val = (v) => (v == null ? "–" : `${num(v)} ${unit}`);
+  const total = (v) => (v == null ? "–" : `${fmt1(v)} ${unit}`);
   const improve = c.mae_raw ? Math.round((1 - c.mae_corr / c.mae_raw) * 100) : null;
-  const sign = (v) => (v > 0 ? "+" : "") + fmt1(v);
+  const sign = (v) => (v > 0 ? "+" : "") + num(v);
+  document.querySelectorAll("#corr-metric button").forEach((b) => b.classList.toggle("active", b.dataset.metric === c.metric));
   $("#corr-summary").innerHTML = c.days ? `
     <div><span class="label">Lerntage</span><b>${c.days}</b></div>
-    <div><span class="label">Ø Fehler ohne Korrektur</span><b>${fmt1(c.mae_raw)} h</b></div>
-    <div><span class="label">Ø Fehler mit Korrektur</span><b class="${c.mae_corr < c.mae_raw ? "better" : "worse"}">${fmt1(c.mae_corr)} h${
+    <div><span class="label">Ø Fehler ohne Korrektur</span><b>${val(c.mae_raw)}</b></div>
+    <div><span class="label">Ø Fehler mit Korrektur</span><b class="${c.mae_corr < c.mae_raw ? "better" : "worse"}">${val(c.mae_corr)}${
       improve != null ? ` (${improve > 0 ? "−" : "+"}${Math.abs(improve)} %)` : ""}</b></div>
-    <div><span class="label">Tendenz ohne → mit</span><b>${sign(c.bias_raw)} h → ${sign(c.bias_corr)} h</b></div>`
+    <div><span class="label">Tendenz ohne → mit</span><b>${sign(c.bias_raw)} → ${sign(c.bias_corr)} ${unit}</b></div>`
     : `<div class="muted">Noch keine Tage mit Prognose und Messwert – Daten unten nachladen.</div>`;
   const rows = c.months.map((m) => {
     const cls = m.mae_corr == null ? "" : m.mae_corr < m.mae_raw ? "better" : "worse";
     const basis = { monat: "", jahr: " <span class=\"tag\">Jahresmittel</span>", keine: " <span class=\"tag\">zu wenig Daten</span>" }[m.basis];
     return `<tr><td>${m.label}</td><td class="num">${m.factor.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${basis}</td>
-      <td class="num">${m.days}</td><td class="num">${m.days ? fmtH(m.raw_h) : "–"}</td><td class="num">${m.days ? fmtH(m.actual_h) : "–"}</td>
-      <td class="num">${m.mae_raw == null ? "–" : fmt1(m.mae_raw) + " h"}</td>
-      <td class="num ${cls}">${m.mae_corr == null ? "–" : fmt1(m.mae_corr) + " h"}</td></tr>`;
+      <td class="num">${m.days}</td><td class="num">${m.days ? total(m.raw_h) : "–"}</td><td class="num">${m.days ? total(m.actual_h) : "–"}</td>
+      <td class="num">${val(m.mae_raw)}</td>
+      <td class="num ${cls}">${val(m.mae_corr)}</td></tr>`;
   }).join("");
   $("#corr-table").innerHTML = `<tr><th>Monat</th><th class="num">Faktor</th><th class="num">Tage</th>
     <th class="num">Modelle</th><th class="num">Gemessen</th><th class="num">Ø Fehler vorher</th><th class="num">nachher</th></tr>${rows}`;
@@ -346,6 +359,10 @@ function initArchive() {
   $("#ar-prev").addEventListener("click", () => step(-1));
   $("#ar-next").addEventListener("click", () => step(1));
   $("#ar-now").addEventListener("click", () => { setToday(); loadArchive(); });
+  document.querySelectorAll("#corr-metric button").forEach((b) => b.addEventListener("click", async () => {
+    ar.corrMetric = b.dataset.metric;
+    renderCorrection(await api(`/api/correction?metric=${ar.corrMetric}`));
+  }));
   $("#ar-year").addEventListener("change", (e) => {
     const y = Number(e.target.value);
     if (ar.mode === "week") { ar.weekYear = y; ar.week = Math.min(ar.week, weeksInYear(y)); } else ar.year = y;

@@ -10,6 +10,8 @@
   --possible: #ece7dc;
   --prob: #2563eb;
   --measured: #0f766e;
+  --pv: #16a34a;
+  --pv-soft: #dcfce7;
   --danger: #b91c1c;
   --radius: 14px;
   color-scheme: light;
@@ -27,6 +29,8 @@
     --possible: #2b2f36;
     --prob: #60a5fa;
     --measured: #2dd4bf;
+    --pv: #4ade80;
+    --pv-soft: #14361f;
     --danger: #f87171;
     color-scheme: dark;
   }
@@ -156,6 +160,21 @@ label.check input { width: auto; }
 .corr-note { margin-top: .35rem; }
 .better { color: var(--measured); font-weight: 600; }
 .worse { color: var(--danger); }
+
+/* Photovoltaik */
+.pv-head { display: grid; grid-template-columns: 1fr 1.2fr; gap: 1rem 1.5rem; align-items: center; margin-bottom: 1rem; }
+@media (max-width: 680px) { .pv-head { grid-template-columns: 1fr; } }
+.pv-big { color: var(--pv); }
+#pv-meter { background: var(--pv); }
+.sw.pv { background: var(--pv); }
+#pv-chart { width: 100%; min-width: 520px; height: 220px; display: block; }
+#pv-chart text { fill: var(--muted); font-size: 11px; }
+#pv-chart .grid { stroke: var(--line); }
+#pv-chart .bar-possible { fill: var(--possible); }
+#pv-chart .bar-pv { fill: var(--pv); }
+#pv-table input { width: 100%; min-width: 4.5rem; }
+#pv-table td { padding: .3rem .35rem; }
+.pv-chip { background: var(--pv-soft); }
 
 /* Archiv */
 .filter-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .7rem .8rem; }

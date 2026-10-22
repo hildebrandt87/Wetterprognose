@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import correction
+import pv
 import sources
 from sun import day_profile
 
@@ -45,7 +46,16 @@ def compute(settings, day_spec="tomorrow"):
         raise ValueError("Kein Standort gesetzt – bitte in den Einstellungen festlegen.")
     day = resolve_day(day_spec, loc["timezone"])
     raw = sources.fetch_all(day, loc, settings["sources"], settings.get("met_contact", ""))
-    return evaluate(settings, day, raw)
+    result = evaluate(settings, day, raw)
+    # Strahlung/PV-Fehler sollen die Sonnenprognose nicht verhindern
+    try:
+        rad = pv.radiation(settings, day)
+        result["radiation"] = {k: rad[k] for k in ("ghi_raw", "ghi", "correction")}
+        result["pv"] = pv.compute(settings, day, rad)
+    except Exception as e:  # noqa: BLE001
+        result["radiation"] = None
+        result["pv"] = {"error": str(e)} if settings["pv"]["enabled"] else None
+    return result
 
 
 def evaluate(settings, day, raw, correct=True):

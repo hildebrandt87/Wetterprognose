@@ -88,6 +88,7 @@ function renderForecast(r) {
     : `<span class="muted">Keine Stunde erreicht ${r.threshold_min} Sonnenminuten.</span>`;
 
   renderChart(r.hours);
+  renderPv(r.pv);
 
   const rows = r.sources.map((s) => {
     const meta = s.meta?.station ? `Station ${esc(s.meta.station)} (${s.meta.distance_km} km)` : "";
@@ -137,6 +138,116 @@ function renderChart(hours) {
   svg.innerHTML = out;
 }
 
+/* ---------------- Photovoltaik ---------------- */
+const fmtKwh = (v) => v.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+function renderPv(p) {
+  $("#pv-card").hidden = !p;
+  if (!p) return;
+  $("#pv-error").hidden = !p.error;
+  if (p.error) { $("#pv-error").textContent = `Solarertrag nicht berechenbar: ${p.error}`; return; }
+  $("#pv-kwh").textContent = fmtKwh(p.kwh);
+  $("#pv-meter").style.width = p.clear_kwh ? `${Math.min(100, (100 * p.kwh) / p.clear_kwh)}%` : "0";
+  $("#pv-sub").textContent = `von ${fmtKwh(p.clear_kwh)} kWh bei wolkenlosem Himmel`;
+  $("#pv-kwp").textContent = `${p.kwp.toLocaleString("de-DE")} kWp`;
+  $("#pv-specific").textContent = `${p.specific.toLocaleString("de-DE")} kWh/kWp`;
+  $("#pv-peak").textContent = p.peak_hour ? `${p.peak_kw.toLocaleString("de-DE")} kW · ${p.peak_hour}` : "–";
+  $("#pv-ghi").textContent = `${p.ghi_kwh_m2.toLocaleString("de-DE")} kWh/m²`;
+  const c = p.correction;
+  $("#pv-corr").hidden = !c || Math.abs(p.raw_kwh - p.kwh) < 0.05;
+  if (c) {
+    $("#pv-corr").textContent = `Korrigiert: Modelle ${fmtKwh(p.raw_kwh)} kWh, Strahlung × ` +
+      `${c.factor.toLocaleString("de-DE")} (${c.basis === "jahr" ? "Jahresmittel" : c.month}, ${c.days} Archivtage)`;
+  }
+  $("#pv-arrays").innerHTML = p.arrays.length > 1
+    ? p.arrays.map((a) => `<div class="window-chip pv-chip">${esc(a.name)}: ${fmtKwh(a.kwh)} kWh<span>${a.kwp.toLocaleString("de-DE")} kWp</span></div>`).join("")
+    : "";
+  renderPvChart(p.hours);
+}
+
+function renderPvChart(hours) {
+  const svg = $("#pv-chart");
+  const W = Math.max(520, svg.clientWidth || 800), H = 220;
+  const m = { l: 40, r: 10, t: 12, b: 26 };
+  const cw = W - m.l - m.r, ch = H - m.t - m.b;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!hours.length) { svg.innerHTML = ""; return; }
+  const max = Math.max(0.1, ...hours.map((h) => Math.max(h.kwh, h.clear_kwh)));
+  const top = Math.ceil(max * 2) / 2;
+  const y = (v) => m.t + ch - (v / top) * ch;
+  const step = cw / hours.length, bw = Math.max(4, step * 0.7);
+  let out = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = (top / 4) * i;
+    out += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>`;
+    out += `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${v.toLocaleString("de-DE", { maximumFractionDigits: 2 })}</text>`;
+  }
+  hours.forEach((h, i) => {
+    const x = m.l + i * step + (step - bw) / 2;
+    out += `<g><title>${h.hour} Uhr: ${h.kwh.toLocaleString("de-DE", { maximumFractionDigits: 2 })} kWh ` +
+      `(wolkenlos ${h.clear_kwh.toLocaleString("de-DE", { maximumFractionDigits: 2 })} kWh)</title>`;
+    out += `<rect class="bar-possible" x="${x}" y="${y(h.clear_kwh)}" width="${bw}" height="${m.t + ch - y(h.clear_kwh)}" rx="3"/>`;
+    out += `<rect class="bar-pv" x="${x}" y="${y(h.kwh)}" width="${bw}" height="${m.t + ch - y(h.kwh)}" rx="3"/></g>`;
+    if (step > 24 || i % 2 === 0) out += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${h.hour.slice(0, 2)}</text>`;
+  });
+  svg.innerHTML = out;
+}
+
+function pvRow(a = { name: "", count: 10, wp: 430, tilt: 30, azimuth: 180 }) {
+  return `<tr>
+    <td><input type="text" data-f="name" value="${esc(a.name)}" placeholder="z. B. Süddach"></td>
+    <td><input type="number" data-f="count" min="0" step="1" value="${a.count}"></td>
+    <td><input type="number" data-f="wp" min="0" step="5" value="${a.wp}"></td>
+    <td><input type="number" data-f="tilt" min="0" max="90" step="1" value="${a.tilt}"></td>
+    <td><input type="number" data-f="azimuth" min="0" max="359" step="1" value="${a.azimuth}"></td>
+    <td class="num kwp">–</td>
+    <td><button type="button" class="btn ghost icon pv-del" title="Entfernen">×</button></td></tr>`;
+}
+
+function fillPv(pv) {
+  $("#pv-enabled").checked = pv.enabled;
+  $("#pv-table").innerHTML = `<tr><th>Name</th><th>Anzahl</th><th>Wp je Modul</th><th>Neigung °</th>
+    <th>Ausrichtung °</th><th class="num">kWp</th><th></th></tr>` + pv.arrays.map(pvRow).join("");
+  $("#pv-losses").value = pv.losses_pct;
+  $("#pv-inverter").value = pv.inverter_kw ?? "";
+  $("#pv-tempcoeff").value = pv.temp_coeff;
+  updatePvTotal();
+}
+
+function readPv() {
+  const arrays = [...document.querySelectorAll("#pv-table tr")].slice(1).map((tr) => {
+    const v = (f) => tr.querySelector(`[data-f="${f}"]`).value;
+    return { name: v("name").trim(), count: Number(v("count") || 0), wp: Number(v("wp") || 0),
+      tilt: Number(v("tilt") || 0), azimuth: Number(v("azimuth") || 0) };
+  });
+  return {
+    enabled: $("#pv-enabled").checked,
+    arrays,
+    losses_pct: Number($("#pv-losses").value || 0),
+    inverter_kw: $("#pv-inverter").value === "" ? null : Number($("#pv-inverter").value),
+    temp_coeff: Number($("#pv-tempcoeff").value || -0.35),
+  };
+}
+
+function updatePvTotal() {
+  let total = 0;
+  [...document.querySelectorAll("#pv-table tr")].slice(1).forEach((tr) => {
+    const kwp = (Number(tr.querySelector('[data-f="count"]').value) * Number(tr.querySelector('[data-f="wp"]').value)) / 1000;
+    tr.querySelector(".kwp").textContent = kwp.toLocaleString("de-DE", { maximumFractionDigits: 2 });
+    total += kwp;
+  });
+  $("#pv-total").textContent = `Gesamt: ${total.toLocaleString("de-DE", { maximumFractionDigits: 2 })} kWp`;
+}
+
+$("#pv-table").addEventListener("input", updatePvTotal);
+$("#pv-table").addEventListener("click", (e) => {
+  if (e.target.closest(".pv-del")) { e.target.closest("tr").remove(); updatePvTotal(); }
+});
+$("#pv-add").addEventListener("click", () => {
+  $("#pv-table").insertAdjacentHTML("beforeend", pvRow({ name: "", count: 1, wp: 430, tilt: 30, azimuth: 180 }));
+  updatePvTotal();
+});
+
 /* ---------------- Einstellungen ---------------- */
 function fillSettings(s) {
   const L = s.location;
@@ -154,6 +265,8 @@ function fillSettings(s) {
   $("#calc-threshold").value = s.sunny_threshold_min;
   $("#calc-metcontact").value = s.met_contact || "";
   $("#calc-correction").checked = s.correction.enabled;
+  $("#calc-correction-rad").checked = s.correction.radiation;
+  fillPv(s.pv);
   const labels = {
     icon: "DWD ICON (Open-Meteo)", ecmwf: "ECMWF IFS (Open-Meteo)", meteofrance: "Météo-France (Open-Meteo)",
     gfs: "NOAA GFS (Open-Meteo)", mosmix: "DWD MOSMIX (Bright Sky)", met: "MET Norway (Bewölkung → Sonne)",
@@ -194,7 +307,8 @@ function collectSettings() {
     horizon: readHorizon(),
     sunny_threshold_min: num("#calc-threshold") ?? 30,
     met_contact: $("#calc-metcontact").value.trim(),
-    correction: { enabled: $("#calc-correction").checked },
+    correction: { enabled: $("#calc-correction").checked, radiation: $("#calc-correction-rad").checked },
+    pv: readPv(),
     sources: sourcesOut,
     mail: {
       enabled: $("#mail-enabled").checked,
@@ -402,5 +516,9 @@ async function loadStatus() {
 let resizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => lastResult && renderChart(lastResult.hours), 150);
+  resizeTimer = setTimeout(() => {
+    if (!lastResult) return;
+    renderChart(lastResult.hours);
+    if (lastResult.pv?.hours) renderPvChart(lastResult.pv.hours);
+  }, 150);
 });

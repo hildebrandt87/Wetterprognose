@@ -56,6 +56,31 @@
         </div>
       </div>
 
+      <div class="card" id="pv-card" hidden>
+        <h2>Solarertrag</h2>
+        <div id="pv-error" class="err" hidden></div>
+        <div class="pv-head">
+          <div>
+            <div class="big pv-big"><span id="pv-kwh">–</span><small>kWh</small></div>
+            <div class="meter"><div id="pv-meter"></div></div>
+            <div class="muted" id="pv-sub">–</div>
+          </div>
+          <div class="facts">
+            <div><span class="label">Anlage</span><b id="pv-kwp">–</b></div>
+            <div><span class="label">Spezifisch</span><b id="pv-specific">–</b></div>
+            <div><span class="label">Spitze (Stundenmittel)</span><b id="pv-peak">–</b></div>
+            <div><span class="label">Einstrahlung</span><b id="pv-ghi">–</b></div>
+          </div>
+        </div>
+        <div class="muted small corr-note" id="pv-corr" hidden></div>
+        <div class="chart-wrap"><svg id="pv-chart" role="img" aria-label="Solarertrag je Stunde"></svg></div>
+        <div class="legend">
+          <span><i class="sw pv"></i>erwarteter Ertrag (kWh je Stunde)</span>
+          <span><i class="sw possible"></i>bei wolkenlosem Himmel</span>
+        </div>
+        <div id="pv-arrays" class="windows" style="margin-top:.8rem"></div>
+      </div>
+
       <div class="card">
         <h2>Wann scheint die Sonne?</h2>
         <div id="fc-windows" class="windows"></div>
@@ -131,8 +156,14 @@
     </div>
 
     <div class="card">
-      <h2>Lernende Korrektur</h2>
-      <p class="muted small">Je Kalendermonat: gemessene ÷ unkorrigiert prognostizierte Sonnenstunden, Nachbarmonate halb
+      <div class="row-between" style="margin-bottom:.4rem">
+        <h2 style="margin:0">Lernende Korrektur</h2>
+        <div class="seg" id="corr-metric">
+          <button data-metric="sun" class="active">Sonnenstunden</button>
+          <button data-metric="ghi">Strahlung (Solar)</button>
+        </div>
+      </div>
+      <p class="muted small">Je Kalendermonat: Messwert ÷ unkorrigierte Prognose (DWD-Station), Nachbarmonate halb
         gewichtet, bei wenigen Daten Richtung 1 gezogen. Die Güte ist per Kreuzvalidierung ermittelt – jeder Tag wird mit
         einem Faktor bewertet, in den er selbst nicht eingeflossen ist.</p>
       <div id="corr-summary" class="meta-grid"></div>
@@ -203,10 +234,31 @@
           <input id="calc-threshold" type="number" min="1" max="60"></label>
         <label>Kontakt für MET Norway (E-Mail, empfohlen)
           <input id="calc-metcontact" type="text" placeholder="du@example.com"></label>
-        <label class="check"><input id="calc-correction" type="checkbox"> Lernende Monatskorrektur aus dem Archiv</label>
+        <label class="check"><input id="calc-correction" type="checkbox"> Lernende Monatskorrektur der Sonnenstunden</label>
+        <label class="check"><input id="calc-correction-rad" type="checkbox"> Lernende Strahlungskorrektur für den Solarertrag</label>
       </div>
       <div class="table-wrap"><table class="tbl" id="src-table"></table></div>
       <p class="muted small">Gewicht 0 = Quelle ignorieren. MOSMIX wird automatisch geringer gewichtet, je weiter die nächste DWD-Station entfernt ist (0 ab 40 km).</p>
+    </div>
+
+    <div class="card">
+      <h2>Photovoltaik</h2>
+      <label class="check"><input id="pv-enabled" type="checkbox"> Solarertrag berechnen</label>
+      <p class="muted small">Ein Modulfeld je Dachfläche bzw. Ausrichtung. Ausrichtung in Grad: 90 = Ost, 135 = Südost,
+        180 = Süd, 225 = Südwest, 270 = West. Neigung: 0 = flach liegend, 90 = senkrecht (Balkon/Fassade).</p>
+      <div class="table-wrap"><table class="tbl" id="pv-table"></table></div>
+      <div class="btn-row">
+        <button id="pv-add" class="btn ghost" type="button">+ Modulfeld hinzufügen</button>
+        <span class="muted" id="pv-total"></span>
+      </div>
+      <div class="form-grid">
+        <label>Systemverluste (%)<input id="pv-losses" type="number" min="0" max="50" step="1"></label>
+        <label>Wechselrichter max. (kW, optional)<input id="pv-inverter" type="number" min="0" step="0.1" placeholder="unbegrenzt"></label>
+        <label>Temperaturkoeffizient (%/°C)<input id="pv-tempcoeff" type="number" step="0.01" max="0"></label>
+      </div>
+      <p class="muted small">Systemverluste: Kabel, Wechselrichter, Verschmutzung, Alterung – typisch 10–16 %. Den
+        Temperaturkoeffizienten (Pmax) findest du im Datenblatt der Module, meist −0,29 bis −0,40.
+        Verschattung durch Berge/Gebäude kommt aus dem Horizontprofil oben.</p>
     </div>
 
     <div class="card">

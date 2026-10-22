@@ -17,8 +17,17 @@ DEFAULT_SETTINGS = {
     "sunny_threshold_min": 30,
     "sources": {k: {"enabled": True, "weight": v["weight"]} for k, v in sources.SOURCES.items()},
     "met_contact": "",
+    # Photovoltaik: Modulfelder mit Anzahl, Leistung je Modul (Wp), Neigung und Ausrichtung (180 = Süd)
+    "pv": {
+        "enabled": False,
+        "arrays": [{"name": "Dach", "count": 10, "wp": 430, "tilt": 30, "azimuth": 180}],
+        "losses_pct": 14,
+        "inverter_kw": None,
+        "temp_coeff": -0.35,
+        "albedo": 0.2,
+    },
     # Lernende Monatskorrektur aus dem Archiv (Prognose vs. Messung)
-    "correction": {"enabled": True},
+    "correction": {"enabled": True, "radiation": True},
     "mail": {
         "enabled": False,
         "recipients": "",
